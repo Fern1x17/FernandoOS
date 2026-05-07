@@ -1,5 +1,6 @@
 #include "vfs.h"
 #include "../drivers/vga.h"
+#include "../drivers/ata.h"
 #include "../libc/string.h"
 
 /* ── Estado global ────────────────────────────────────────── */
@@ -98,6 +99,87 @@ static int resolve_path(const char* path, int* parent_out, char* last_component)
     return dir;
 }
 
+/* ── Persistencia ATA ─────────────────────────────────────
+ *
+ * Diseño del disco:
+ *   Sector 0       : cabecera (magic, sizeof de la estructura, nodo count)
+ *   Sectores 1-N   : volcado del array nodes[]
+ *
+ * Si el magic no coincide (disco virgen) vfs_load() no toca nada.
+ */
+
+#define VFS_MAGIC    0x5346564FU   /* "OVFS" */
+#define VFS_HDR_LBA  0U
+#define VFS_DAT_LBA  1U
+
+typedef struct {
+    uint32_t magic;
+    uint32_t node_size;    /* sizeof(vfs_node_t) — guarda de versión */
+    uint32_t node_count;   /* VFS_MAX_NODES */
+    uint32_t _pad[125];    /* relleno hasta 512 bytes */
+} vfs_disk_hdr_t;
+
+/* Lee/escribe bloques del array 'data' de 'size' bytes a partir de 'lba' */
+static void disk_write(uint32_t lba, const void* data, uint32_t size) {
+    const uint8_t* ptr = (const uint8_t*)data;
+    uint8_t buf[512];
+    while (size > 0) {
+        uint32_t n = size < 512U ? size : 512U;
+        memcpy(buf, ptr, n);
+        if (n < 512U) memset(buf + n, 0, 512U - n);
+        ata_write_sector(lba++, buf);
+        ptr  += n;
+        size -= n;
+    }
+}
+
+static void disk_read(uint32_t lba, void* data, uint32_t size) {
+    uint8_t* ptr = (uint8_t*)data;
+    uint8_t buf[512];
+    while (size > 0) {
+        ata_read_sector(lba++, buf);
+        uint32_t n = size < 512U ? size : 512U;
+        memcpy(ptr, buf, n);
+        ptr  += n;
+        size -= n;
+    }
+}
+
+void vfs_save(void) {
+    if (!ata_present()) return;
+
+    uint8_t hdr_buf[512];
+    memset(hdr_buf, 0, 512);
+    vfs_disk_hdr_t* h = (vfs_disk_hdr_t*)hdr_buf;
+    h->magic      = VFS_MAGIC;
+    h->node_size  = sizeof(vfs_node_t);
+    h->node_count = VFS_MAX_NODES;
+    ata_write_sector(VFS_HDR_LBA, hdr_buf);
+
+    disk_write(VFS_DAT_LBA, nodes, sizeof(nodes));
+}
+
+int vfs_load(void) {
+    if (!ata_present()) return 0;
+
+    uint8_t hdr_buf[512];
+    memset(hdr_buf, 0, 512);
+    ata_read_sector(VFS_HDR_LBA, hdr_buf);
+    vfs_disk_hdr_t* h = (vfs_disk_hdr_t*)hdr_buf;
+
+    if (h->magic      != VFS_MAGIC)          return 0;  /* disco virgen */
+    if (h->node_size  != sizeof(vfs_node_t)) return 0;  /* versión diferente */
+    if (h->node_count != VFS_MAX_NODES)      return 0;
+
+    disk_read(VFS_DAT_LBA, nodes, sizeof(nodes));
+    /* Asegurarse de que el nodo raíz siempre existe */
+    nodes[0].used   = 1;
+    nodes[0].type   = VFS_DIR;
+    nodes[0].parent = 0;
+    if (nodes[0].name[0] == '\0') strcpy(nodes[0].name, "/");
+    return 1;
+}
+
 /* ── Inicializacion ──────────────────────────────────────── */
 
 void vfs_init(void) {
@@ -152,6 +234,7 @@ int vfs_mkdir(const char* path) {
     nodes[idx].size   = 0;
     strncpy(nodes[idx].name, last, VFS_MAX_NAME - 1);
     nodes[idx].name[VFS_MAX_NAME - 1] = '\0';
+    vfs_save();
     return idx;
 }
 
@@ -312,6 +395,7 @@ int vfs_create(const char* path) {
     strncpy(nodes[idx].name, last, VFS_MAX_NAME - 1);
     nodes[idx].name[VFS_MAX_NAME - 1] = '\0';
     nodes[idx].data[0] = '\0';
+    vfs_save();
     return idx;
 }
 
@@ -337,6 +421,7 @@ int vfs_write(const char* path, const char* data, uint32_t len) {
         nodes[idx].data[i] = data[i];
     nodes[idx].data[len] = '\0';
     nodes[idx].size = len;
+    vfs_save();
     return (int)len;
 }
 
@@ -381,6 +466,7 @@ int vfs_rm(const char* name) {
 
     nodes[idx].used = 0;
     nodes[idx].name[0] = '\0';
+    vfs_save();
     return 0;
 }
 

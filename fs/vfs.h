@@ -38,4 +38,8 @@ void vfs_cat(const char* path);
 /* Utilidad */
 int vfs_get_cwd(void);
 
+/* Persistencia ATA */
+void vfs_save(void);
+int  vfs_load(void);   /* 0 = disco virgen/error, 1 = cargado */
+
 #endif

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make *)",
+      "Read(//root/opt/cross/bin/**)",
+      "Read(//usr/**)",
+      "Read(//opt/cross/**)",
+      "Bash(find / -maxdepth 6 -name \"i686-elf-gcc\")",
+      "Bash(export PATH=\"$HOME/opt/cross/bin:$PATH\")"
+    ]
+  }
+}

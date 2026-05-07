@@ -5,18 +5,20 @@
 #include "../drivers/vga.h"
 #include "../drivers/timer.h"
 #include "../drivers/keyboard.h"
+#include "../drivers/ata.h"
 #include "../memory/mem.h"
 #include "../memory/pmm.h"
 #include "../memory/vmm.h"
 #include "../memory/paging.h"
 #include "../fs/vfs.h"
 #include "../sched/sched.h"
+#include "../users/users.h"
 #include "../shell/shell.h"
 #include <stdint.h>
 
 #define MULTIBOOT_MAGIC 0x2BADB002
 
-/* ── Tarea de demostracion ────────────────────────────────── */
+/* ── Tarea idle ───────────────────────────────────────────── */
 
 static void task_idle(void) {
     volatile uint32_t counter = 0;
@@ -36,7 +38,7 @@ static void banner(void) {
     vga_puts(" | _| / -_)| '_|| ' \\ / _` | ' \\/ _` / _ \\ |  _\\__ \\ \n");
     vga_puts(" |_|  \\___||_|  |_||_|\\__,_|_||_\\__,_\\___/\\____/___/ \n");
     vga_set_color(VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK);
-    vga_puts("                               v0.1.0  -  kernel x86\n\n");
+    vga_puts("                               v0.3.0  -  kernel x86\n\n");
 }
 
 static void boot_msg(const char* component, int ok) {
@@ -53,17 +55,15 @@ static void boot_msg(const char* component, int ok) {
 
 /* ── Punto de entrada del kernel ─────────────────────────── */
 
-/* Cabecera mínima de Multiboot para leer mem_lower/mem_upper */
 typedef struct {
     uint32_t flags;
-    uint32_t mem_lower;   /* KB de memoria baja (< 1 MB) */
-    uint32_t mem_upper;   /* KB de memoria alta (> 1 MB) */
+    uint32_t mem_lower;
+    uint32_t mem_upper;
 } __attribute__((packed)) mb_info_t;
 
 void kernel_main(uint32_t magic, uint32_t mb_addr) {
     vga_init();
     vga_clear();
-
     banner();
 
     vga_set_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
@@ -71,21 +71,18 @@ void kernel_main(uint32_t magic, uint32_t mb_addr) {
 
     if (magic != MULTIBOOT_MAGIC) {
         vga_set_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK);
-        vga_puts(" ADVERTENCIA: magic de multiboot incorrecto: ");
-        vga_put_hex(magic);
-        vga_putchar('\n');
+        vga_puts(" ADVERTENCIA: magic multiboot incorrecto: ");
+        vga_put_hex(magic); vga_putchar('\n');
     }
 
-    /* Detectar RAM total desde la estructura Multiboot */
-    uint32_t total_mem_kb = 32U * 1024U;   /* fallback: 32 MB */
+    uint32_t total_mem_kb = 32U * 1024U;
     if (mb_addr) {
         mb_info_t* mbi = (mb_info_t*)mb_addr;
-        if (mbi->flags & 1U)
-            total_mem_kb = 1024U + mbi->mem_upper;
+        if (mbi->flags & 1U) total_mem_kb = 1024U + mbi->mem_upper;
     }
 
     mem_init();
-    boot_msg("Heap kmalloc (bump allocator, 4 MB)", 1);
+    boot_msg("Heap kmalloc (free-list + coalescing, 4 MB)", 1);
 
     pmm_init(total_mem_kb);
     boot_msg("PMM (bitmap de frames fisicos)", 1);
@@ -108,8 +105,20 @@ void kernel_main(uint32_t magic, uint32_t mb_addr) {
     irq_install();
     boot_msg("IRQ (Controlador de interrupciones PIC)", 1);
 
+    /* ATA debe inicializarse antes del VFS y usuarios para que
+       vfs_load() y users_load() puedan leer del disco */
+    ata_init();
+    boot_msg(ata_present()
+             ? "ATA PIO (disco IDE detectado)"
+             : "ATA PIO (sin disco — sin persistencia)", 1);
+
     vfs_init();
-    boot_msg("VFS (RAM filesystem)", 1);
+    if (!vfs_load() && ata_present()) vfs_save();   /* primer arranque: persiste defaults */
+    boot_msg("VFS (RAM filesystem + persistencia ATA)", 1);
+
+    users_init();
+    if (!users_load() && ata_present()) users_save(); /* primer arranque: persiste defaults */
+    boot_msg("Usuarios (cuentas cargadas del disco)", 1);
 
     timer_install();
     boot_msg("PIT (Temporizador @ 100 Hz)", 1);
@@ -123,7 +132,6 @@ void kernel_main(uint32_t magic, uint32_t mb_addr) {
     __asm__ volatile("sti");
     boot_msg("CPU (Interrupciones habilitadas)", 1);
 
-    /* Crear tarea idle de demostracion y arrancar planificador */
     sched_create("idle", task_idle);
     sched_start();
 
@@ -134,7 +142,6 @@ void kernel_main(uint32_t magic, uint32_t mb_addr) {
 
     shell_run();
 
-    /* No deberia llegar aqui */
     __asm__ volatile("cli");
     for (;;) __asm__ volatile("hlt");
 }

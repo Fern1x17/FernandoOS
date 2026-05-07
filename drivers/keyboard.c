@@ -34,14 +34,15 @@ static const uint8_t sc_upper[] = {
 };
 
 /*
- * Tabla AltGr — caracteres especiales accesibles con Alt/AltGr.
+ * Tabla AltGr — caracteres especiales accesibles con AltGr.
  * El indice es el scancode; 0 = no hay caracter AltGr para ese SC.
+ * Vocales acentuadas: AltGr+a=á, e=é, i=í, o=ó, u=ú, q=æ
  */
 static const uint8_t sc_altgr[] = {
     0,    0,    0,   '@', '#', '~',  0,   0,   0,   0,   /* 0x00-0x09: 2->@, 3->#, 4->~ */
-    0,    0,    0,   0,   0,   0,   '@',  0,   0,   0,   /* 0x0A-0x13: q->@ (alt) */
-    0,    0,    0,   0,   0,   0,  '[',  ']',  0,   0,   /* 0x14-0x1D: `->[ , +-&gt;] */
-    0,    0,    0,   0,   0,   0,   0,   0,   0,   0,   /* 0x1E-0x27 */
+    0,    0,    0,   0,   0,   0,  0x91,  0, 0x82,  0,   /* 0x0A-0x13: q->æ(0x91), e->é(0x82) */
+    0,    0,  0xA3,0xA1,0xA2,  0,  '[',  ']',  0,   0,   /* 0x14-0x1D: u->ú, i->í, o->ó, `->[ +->&gt;] */
+  0xA0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   /* 0x1E-0x27: a->á(0xA0) */
     '{',  0,    0,  '}',  0,   0,   0,   0,   0,   0,   /* 0x28-0x31: ´->{, ç->} */
     0,    0,    0,  '\\', 0,   0,   0,   0,   0,   0,   /* 0x32-0x3B: ->\\ */
     0,    0,    0,   0,   0,   0,   0,   0,   0,   0,   /* 0x3C-0x45 */
@@ -57,10 +58,11 @@ static char     kb_buf[KB_BUF_SIZE];
 static volatile int kb_head = 0;
 static volatile int kb_tail = 0;
 
-static int shift  = 0;
-static int ctrl   = 0;
-static int caps   = 0;
-static int altgr  = 0;  /* Alt izquierdo o AltGr */
+static int shift       = 0;
+static int ctrl        = 0;
+static int caps        = 0;
+static int altgr       = 0;  /* Alt izquierdo o AltGr */
+static int dead_accent = 0;  /* tecla muerta ´ pendiente */
 
 static void kb_buf_put(char c) {
     int next = (kb_tail + 1) % KB_BUF_SIZE;
@@ -110,6 +112,35 @@ static void keyboard_handler(registers_t* regs) {
 
     /* Ctrl+C = caracter especial 3 */
     if (ctrl && (c == 'c' || c == 'C')) c = 3;
+
+    /* Tecla muerta: acento agudo (´).
+     * Si dead_accent esta activo, la siguiente vocal produce la versión acentuada.
+     * Cualquier otra tecla emite ´ seguido del caracter normal. */
+    if (dead_accent && c) {
+        dead_accent = 0;
+        uint8_t out;
+        switch (c) {
+            case 'a': out = 0xA0; break;  /* á */
+            case 'e': out = 0x82; break;  /* é */
+            case 'i': out = 0xA1; break;  /* í */
+            case 'o': out = 0xA2; break;  /* ó */
+            case 'u': out = 0xA3; break;  /* ú */
+            case 'A': out = 0xB5; break;  /* Á */
+            case 'E': out = 0x90; break;  /* É */
+            case 'I': out = 0xD6; break;  /* Í */
+            case 'O': out = 0xE0; break;  /* Ó */
+            case 'U': out = 0xE9; break;  /* Ú */
+            default:  kb_buf_put((char)0xB4); out = c; break;
+        }
+        if (out) kb_buf_put((char)out);
+        return;
+    }
+
+    /* Activar tecla muerta ´ (solo sin AltGr para no bloquear ´->{) */
+    if (!altgr && c == 0xB4) {
+        dead_accent = 1;
+        return;
+    }
 
     if (c) kb_buf_put((char)c);
 }

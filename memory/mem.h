@@ -11,5 +11,7 @@ void     kfree(void* ptr);
 uint32_t mem_get_used(void);
 uint32_t mem_get_free(void);
 uint32_t mem_get_total(void);
+uint32_t mem_get_blocks(void);
+uint32_t mem_get_largest_free(void);
 
 #endif
